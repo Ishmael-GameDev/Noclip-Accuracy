@@ -1,4 +1,4 @@
-﻿using Modding;
+using Modding;
 using UnityEngine;
 using System.Collections;
 using GlobalEnums;
@@ -50,6 +50,10 @@ namespace NoclipAccuracy
         private float lastHitTime = -999f;
         private bool inBurst = false;
 
+        private bool awaitingHazardClear = false;
+        private bool prevHazardRespawning = false;
+        private int suppressedHazardHits = 0;
+
         private GameObject hud;
         private Vector3 origpos;
 
@@ -57,6 +61,23 @@ namespace NoclipAccuracy
 
         // fullscreen flash
         private GameObject _flashOverlay;
+        private Coroutine _flashRoutineHandle;
+
+        private class PersistentRunner : MonoBehaviour { }
+        private PersistentRunner _runner;
+        private PersistentRunner Runner
+        {
+            get
+            {
+                if (_runner == null)
+                {
+                    var go = new GameObject("NoclipAccuracyRunner");
+                    _runner = go.AddComponent<PersistentRunner>();
+                    Object.DontDestroyOnLoad(go);
+                }
+                return _runner;
+            }
+        }
 
         public override void Initialize()
         {
@@ -67,6 +88,25 @@ namespace NoclipAccuracy
             ModHooks.TakeDamageHook += OnTakeDamageHook;
             On.HeroController.Awake += HeroAwake;
             On.HeroController.Update += HeroUpdate;
+            UnityEngine.SceneManagement.SceneManager.activeSceneChanged += OnSceneChanged;
+        }
+        private void OnSceneChanged(UnityEngine.SceneManagement.Scene from, UnityEngine.SceneManagement.Scene to)
+        {
+            //Log($"[NoclipAccuracy] Scene changed: '{from.name}' -> '{to.name}'. Resetting inBurst/awaitingHazardClear.");
+
+            inBurst = false;
+            awaitingHazardClear = false;
+            prevHazardRespawning = false;
+            suppressedHazardHits = 0;
+
+            if (_flashRoutineHandle != null)
+            {
+                Runner.StopCoroutine(_flashRoutineHandle);
+                _flashRoutineHandle = null;
+            }
+
+            if (_flashOverlay != null)
+                _flashOverlay.SetActive(false);
         }
 
         // LOAD PNG
@@ -100,6 +140,8 @@ namespace NoclipAccuracy
             if (Settings.Keybinds.Reset.WasPressed)
             {
                 hits = 0;
+                awaitingHazardClear = false;
+                suppressedHazardHits = 0;
                 UpdateHUD();
             }
             bool nowAtBench = PlayerData.instance != null && PlayerData.instance.atBench;
@@ -107,19 +149,60 @@ namespace NoclipAccuracy
             if (nowAtBench && !lastAtBench)
             {
                 hits = 0;
+                awaitingHazardClear = false;
+                suppressedHazardHits = 0;
                 UpdateHUD();
             }
 
             lastAtBench = nowAtBench;
+
+            bool nowHazardRespawning = self.cState.hazardRespawning;
+
+            if (awaitingHazardClear)
+            {
+
+                if (prevHazardRespawning && !nowHazardRespawning)
+                {
+                    awaitingHazardClear = false;
+                    suppressedHazardHits = 0;
+                }
+                else if (!nowHazardRespawning && !self.cState.invulnerable
+                         && Time.time - lastHitTime > Settings.BurstDelay)
+                {
+                    awaitingHazardClear = false;
+                    suppressedHazardHits = 0;
+                }
+            }
+
+            prevHazardRespawning = nowHazardRespawning;
         }
 
         // DAMAGE
         private int OnTakeDamageHook(ref int hazardType, int damage)
         {
+            var hc = HeroController.instance;
+
             if (damage <= 0) return damage;
             if (hazardType <= (int)HazardType.SPIKES) return damage;
 
-            float now = Time.realtimeSinceStartup;
+            if (hc == null || hc.cState.transitioning)
+            {
+                //Log($"[NoclipAccuracy] Ignored damage during scene transition (hazardType={hazardType}, damage={damage}).");
+                return damage;
+            }
+
+            float now = Time.time;
+
+            if (awaitingHazardClear)
+            {
+                suppressedHazardHits++;
+                if (suppressedHazardHits == 1)
+                {
+                    //Log($"[NoclipAccuracy] Ignoring repeated hazard ticks while awaiting clear (hazardType={hazardType}, timeScale={Time.timeScale}) - further identical ticks are suppressed silently.")
+                }
+                lastHitTime = now;
+                return damage;
+            }
 
             if (inBurst)
             {
@@ -128,13 +211,17 @@ namespace NoclipAccuracy
             }
 
             inBurst = true;
-            HeroController.instance?.StartCoroutine(BurstWatcher());
+            Runner.StartCoroutine(BurstWatcher());
 
             TriggerFlash();
 
             lastHitTime = now;
             hits++;
+            awaitingHazardClear = true;
+            suppressedHazardHits = 0;
             UpdateHUD();
+
+            //Log($"[NoclipAccuracy] Counted hit #{hits} (hazardType={hazardType}, damage={damage}, timeScale={Time.timeScale}).");
 
             return damage;
         }
@@ -145,7 +232,7 @@ namespace NoclipAccuracy
             {
                 yield return null;
 
-                if (Time.realtimeSinceStartup - lastHitTime > Settings.BurstDelay)
+                if (Time.time - lastHitTime > Settings.BurstDelay)
                     break;
             }
 
@@ -158,7 +245,10 @@ namespace NoclipAccuracy
             if (_flashOverlay == null)
                 CreateFlashOverlay();
 
-            HeroController.instance?.StartCoroutine(FlashRoutine());
+            if (_flashRoutineHandle != null)
+                Runner.StopCoroutine(_flashRoutineHandle);
+
+            _flashRoutineHandle = Runner.StartCoroutine(FlashRoutine());
         }
 
         private IEnumerator FlashRoutine()
@@ -168,9 +258,10 @@ namespace NoclipAccuracy
             var img = _flashOverlay.GetComponent<UnityEngine.UI.Image>();
             img.color = new Color(1f, 0f, 0f, 0.1f);
 
-            yield return new WaitForSeconds(0.2f);
+            yield return new WaitForSecondsRealtime(0.2f);
 
             _flashOverlay.SetActive(false);
+            _flashRoutineHandle = null;
         }
 
         private void CreateFlashOverlay()
@@ -204,6 +295,8 @@ namespace NoclipAccuracy
         private void HeroAwake(On.HeroController.orig_Awake orig, HeroController self)
         {
             orig(self);
+
+            Log("[NoclipAccuracy] HeroController.Awake (hero (re)created).");
 
             var hudCanvas = GameObject.Find("_GameCameras")
                 .FindGameObjectInChildren("HudCamera")
