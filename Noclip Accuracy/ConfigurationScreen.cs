@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Satchel.BetterMenus;
 using UnityEngine;
 
@@ -34,6 +34,18 @@ namespace NoclipAccuracy
                         NoclipAccuracy.Instance.Redraw();
                     },
                     () => settings.ShowCounter ? 0 : 1
+                ),
+
+                new HorizontalOption(
+                    "Do Flash",
+                    "",
+                    new[] { "On", "Off" },
+                    i =>
+                    {
+                        settings.DoFlash = i == 0;
+                        NoclipAccuracy.Instance.Redraw();
+                    },
+                    () => settings.DoFlash ? 0 : 1
                 ),
 
                 new HorizontalOption(
