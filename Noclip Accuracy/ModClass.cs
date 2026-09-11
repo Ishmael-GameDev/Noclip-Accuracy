@@ -26,6 +26,7 @@ namespace NoclipAccuracy
     public class GlobalSettings
     {
         public bool ShowCounter = true;
+        public bool DoFlash = true;
         public int PositionIndex = 0;
         public float BurstDelay = 0.5f;
 
@@ -36,7 +37,7 @@ namespace NoclipAccuracy
 
     public class NoclipAccuracy : Mod, IGlobalSettings<GlobalSettings>, ICustomMenuMod
     {
-        public override string GetVersion() => "1.4.2";
+        public override string GetVersion() => "1.1.0";
 
         public static GlobalSettings Settings { get; set; } = new GlobalSettings();
         public static NoclipAccuracy Instance;
@@ -213,7 +214,7 @@ namespace NoclipAccuracy
             inBurst = true;
             Runner.StartCoroutine(BurstWatcher());
 
-            TriggerFlash();
+            if (Settings.DoFlash) TriggerFlash();
 
             lastHitTime = now;
             hits++;
